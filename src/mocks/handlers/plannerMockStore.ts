@@ -94,20 +94,9 @@ const buildInvalidBlockError = (): PlannerErrorResponseModel => ({
   message: '학습 블록 데이터가 유효하지 않습니다',
 });
 
-const validateBlocks = (
+const validateBlockShape = (
   blocks: SavePlannerBlockRequestModel[],
 ): PlannerErrorResponseModel | null => {
-  const draftBlocks = blocks.map((draftBlock, index) =>
-    toDraftBlock({
-      id: draftBlock.id ?? `temp-${index}`,
-      courseId: draftBlock.courseId,
-      dayOfWeek: draftBlock.dayOfWeek,
-      startTime: draftBlock.startTime,
-      endTime: draftBlock.endTime,
-      memo: draftBlock.memo,
-    }),
-  );
-
   for (const block of blocks) {
     const startMinutes = parseTimeToMinutes(block.startTime);
     const endMinutes = parseTimeToMinutes(block.endTime);
@@ -126,7 +115,31 @@ const validateBlocks = (
     ) {
       return buildInvalidBlockError();
     }
+  }
 
+  return null;
+};
+
+const validateBlocks = (
+  blocks: SavePlannerBlockRequestModel[],
+): PlannerErrorResponseModel | null => {
+  const shapeError = validateBlockShape(blocks);
+  if (shapeError) {
+    return shapeError;
+  }
+
+  const draftBlocks = blocks.map((draftBlock, index) =>
+    toDraftBlock({
+      id: draftBlock.id ?? `temp-${index}`,
+      courseId: draftBlock.courseId,
+      dayOfWeek: draftBlock.dayOfWeek,
+      startTime: draftBlock.startTime,
+      endTime: draftBlock.endTime,
+      memo: draftBlock.memo,
+    }),
+  );
+
+  for (const block of blocks) {
     const blockId = block.id ?? draftBlocks[blocks.indexOf(block)]?.id;
     const conflictBlockIds = blockId
       ? getConflictingBlockIdsByBlockId(blockId, draftBlocks)
@@ -196,7 +209,7 @@ export const plannerMockStore = {
   savePlannerDraft(
     payload: SavePlannerDraftRequestModel,
   ): PlannerDraftResponseModel | PlannerErrorResponseModel {
-    const validationError = validateBlocks(payload.blocks);
+    const validationError = validateBlockShape(payload.blocks);
     if (validationError) {
       return validationError;
     }

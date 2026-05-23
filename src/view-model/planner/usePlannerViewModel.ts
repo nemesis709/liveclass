@@ -16,12 +16,14 @@ export const usePlannerViewModel = (weekStart: string) => {
     queryKey: queryKeys.planner(weekStart),
     queryFn: () => plannerRepository.getPlanner(weekStart),
     enabled: weekStart.length > 0,
+    placeholderData: (previousData) => previousData,
   });
 
   const plannerDraftQuery = useQuery({
     queryKey: queryKeys.plannerDraft(weekStart),
     queryFn: () => plannerRepository.getPlannerDraft(weekStart),
     enabled: weekStart.length > 0,
+    placeholderData: (previousData) => previousData,
   });
 
   const savePlannerMutation = useMutation({

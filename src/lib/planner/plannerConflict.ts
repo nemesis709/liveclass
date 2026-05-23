@@ -30,6 +30,27 @@ export const hasConflictingBlocks = (
 ): boolean =>
   blocks.some((block) => findConflictingBlockIds(block, blocks).length > 0);
 
+export const getAllConflictingBlockIds = (
+  blocks: PlannerDraftBlockModel[],
+): string[] => {
+  const conflictingBlockIds = new Set<string>();
+
+  blocks.forEach((block) => {
+    const conflictIds = findConflictingBlockIds(block, blocks);
+
+    if (conflictIds.length === 0) {
+      return;
+    }
+
+    conflictingBlockIds.add(block.id);
+    conflictIds.forEach((conflictId) => {
+      conflictingBlockIds.add(conflictId);
+    });
+  });
+
+  return [...conflictingBlockIds];
+};
+
 export const getConflictingBlockIdsByBlockId = (
   blockId: string,
   blocks: PlannerDraftBlockModel[],
