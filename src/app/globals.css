@@ -363,6 +363,9 @@ body {
   backdrop-filter: blur(6px);
   box-shadow: 0 10px 24px rgba(23, 32, 42, 0.08);
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
   transition:
     top 180ms ease,
     height 180ms ease,
@@ -370,6 +373,16 @@ body {
     border-color 180ms ease,
     box-shadow 180ms ease,
     transform 180ms ease;
+}
+
+.planner-block--dragging {
+  z-index: 3;
+  box-shadow: 0 16px 30px rgba(23, 32, 42, 0.16);
+  transform: scale(1.01);
+  transition:
+    top 40ms linear,
+    height 40ms linear,
+    transform 40ms linear;
 }
 
 .planner-block--conflict {
@@ -384,11 +397,16 @@ body {
   transform: translateY(-1px);
 }
 
+.planner-block--dragging:hover {
+  transform: scale(1.01);
+}
+
 .planner-block strong,
 .planner-block span,
 .planner-block p {
   display: block;
   overflow: hidden;
+  pointer-events: none;
 }
 
 .planner-block strong {

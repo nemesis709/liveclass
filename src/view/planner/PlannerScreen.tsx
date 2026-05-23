@@ -1,7 +1,7 @@
 'use client';
 
-import type { FormEvent } from 'react';
-import { useEffect, useState } from 'react';
+import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   areDraftBlocksEqual,
@@ -95,6 +95,28 @@ const addWeeks = (weekStart: string, offset: number): string => {
 
   return toDateString(nextDate);
 };
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(Math.max(value, min), max);
+
+const snapMinutesToSlot = (minutes: number): number =>
+  Math.round(minutes / kSlotMinutes) * kSlotMinutes;
+
+const replaceBlock = (
+  blocks: PlannerDraftBlockModel[],
+  nextBlock: PlannerDraftBlockModel,
+): PlannerDraftBlockModel[] =>
+  blocks.map((block) => (block.id === nextBlock.id ? nextBlock : block));
+
+interface DragState {
+  blockId: string;
+  durationMinutes: number;
+  originDayOfWeek: number;
+  allowCrossDay: boolean;
+  startClientX: number;
+  startClientY: number;
+  pointerOffsetY: number;
+}
 
 const getBlockStyle = (block: PlannerDraftBlockModel) => {
   const top = (block.startMinutes - kGridStartMinutes) * kPixelsPerMinute;
@@ -223,7 +245,12 @@ export const PlannerScreen = () => {
     savePlannerDraftMutation,
   } = usePlannerViewModel(weekStart);
   const coursesQuery = useCoursesViewModel();
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<DragState | null>(null);
   const [draftBlocks, setDraftBlocks] = useState<PlannerDraftBlockModel[]>([]);
+  const [dragPreviewBlock, setDragPreviewBlock] = useState<PlannerDraftBlockModel | null>(
+    null,
+  );
   const [formValue, setFormValue] = useState<PlannerBlockFormValueModel | null>(null);
   const [modalErrorMessage, setModalErrorMessage] = useState<string | null>(null);
 
@@ -231,15 +258,19 @@ export const PlannerScreen = () => {
   const savedPlanner = plannerQuery.data;
   const draftPlanner = plannerDraftQuery.data;
   const activePlanner = draftPlanner ?? savedPlanner;
-  const summary = buildDraftSummary(draftBlocks);
+  const effectiveBlocks = dragPreviewBlock
+    ? replaceBlock(draftBlocks, dragPreviewBlock)
+    : draftBlocks;
+  const summary = buildDraftSummary(effectiveBlocks);
   const gridSlots = buildGridSlots();
   const timeLabels = buildTimeLabelOffsets();
-  const conflictingBlockIds = getAllConflictingBlockIds(draftBlocks);
+  const conflictingBlockIds = getAllConflictingBlockIds(effectiveBlocks);
   const conflictingBlockIdSet = new Set(conflictingBlockIds);
   const savedDraftBlocks = savedPlanner ? toDraftModel(savedPlanner).blocks : [];
-  const isDirty = !areDraftBlocksEqual(draftBlocks, savedDraftBlocks);
+  const isDirty = !areDraftBlocksEqual(effectiveBlocks, savedDraftBlocks);
   const hasConflicts = conflictingBlockIds.length > 0;
   const isSavingPlanner = savePlannerMutation.isPending;
+  const isDragging = dragPreviewBlock !== null;
   const isWeekFetching =
     (plannerQuery.isFetching || plannerDraftQuery.isFetching) &&
     !plannerQuery.isLoading &&
@@ -253,10 +284,12 @@ export const PlannerScreen = () => {
   useEffect(() => {
     if (!activePlanner) {
       setDraftBlocks([]);
+      setDragPreviewBlock(null);
       return;
     }
 
     setDraftBlocks(toDraftModel(activePlanner).blocks);
+    setDragPreviewBlock(null);
   }, [activePlanner]);
 
   useEffect(() => {
@@ -275,6 +308,19 @@ export const PlannerScreen = () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [isDirty]);
+
+  useEffect(() => {
+    if (!isDragging) {
+      document.body.style.userSelect = '';
+      return undefined;
+    }
+
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.body.style.userSelect = '';
+    };
+  }, [isDragging]);
 
   const handleFormChange = (
     key: keyof PlannerBlockFormValueModel,
@@ -334,6 +380,204 @@ export const PlannerScreen = () => {
     } catch {
       setModalErrorMessage('삭제에 실패했습니다. 다시 시도해주세요.');
     }
+  };
+
+  const resolveDraggedDayOfWeek = (
+    clientX: number,
+    fallbackDayOfWeek: number,
+  ): number => {
+    const gridElement = gridRef.current;
+
+    if (!gridElement) {
+      return fallbackDayOfWeek;
+    }
+
+    const columnElements = [
+      ...gridElement.querySelectorAll<HTMLElement>('.planner-grid__column[data-day-index]'),
+    ].filter((element) => getComputedStyle(element).display !== 'none');
+
+    const hoveredColumn = columnElements.find((element) => {
+      const rect = element.getBoundingClientRect();
+
+      return clientX >= rect.left && clientX <= rect.right;
+    });
+
+    if (hoveredColumn) {
+      return Number(hoveredColumn.dataset.dayIndex);
+    }
+
+    let nearestDayOfWeek = fallbackDayOfWeek;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    columnElements.forEach((element) => {
+      const rect = element.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const distance = Math.abs(clientX - centerX);
+
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestDayOfWeek = Number(element.dataset.dayIndex);
+      }
+    });
+
+    return nearestDayOfWeek;
+  };
+
+  const buildPreviewBlockFromPointer = (
+    event: PointerEvent,
+  ): PlannerDraftBlockModel | null => {
+    const dragState = dragStateRef.current;
+
+    if (!dragState) {
+      return null;
+    }
+
+    const currentBlock = draftBlocks.find((block) => block.id === dragState.blockId);
+
+    if (!currentBlock) {
+      return null;
+    }
+
+    const nextDayOfWeek = dragState.allowCrossDay
+      ? resolveDraggedDayOfWeek(event.clientX, dragState.originDayOfWeek)
+      : dragState.originDayOfWeek;
+
+    const columnElement = gridRef.current?.querySelector<HTMLElement>(
+      `.planner-grid__column[data-day-index="${nextDayOfWeek}"]`,
+    );
+
+    if (!columnElement) {
+      return null;
+    }
+
+    const columnRect = columnElement.getBoundingClientRect();
+    const maxTop = columnRect.height - dragState.durationMinutes * kPixelsPerMinute;
+    const relativeY = clamp(
+      event.clientY - columnRect.top - dragState.pointerOffsetY,
+      0,
+      maxTop,
+    );
+    const rawStartMinutes = kGridStartMinutes + relativeY / kPixelsPerMinute;
+    const snappedStartMinutes = clamp(
+      snapMinutesToSlot(rawStartMinutes),
+      kGridStartMinutes,
+      kGridEndMinutes - dragState.durationMinutes,
+    );
+
+    return {
+      ...currentBlock,
+      dayOfWeek: nextDayOfWeek,
+      startMinutes: snappedStartMinutes,
+      endMinutes: snappedStartMinutes + dragState.durationMinutes,
+    };
+  };
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const dragState = dragStateRef.current;
+
+      if (!dragState) {
+        return;
+      }
+
+      const movedDistanceX = Math.abs(event.clientX - dragState.startClientX);
+      const movedDistanceY = Math.abs(event.clientY - dragState.startClientY);
+      const hasExceededDragThreshold =
+        movedDistanceX > 6 || movedDistanceY > 6 || dragPreviewBlock !== null;
+
+      if (!hasExceededDragThreshold) {
+        return;
+      }
+
+      const nextPreviewBlock = buildPreviewBlockFromPointer(event);
+
+      if (!nextPreviewBlock) {
+        return;
+      }
+
+      setDragPreviewBlock(nextPreviewBlock);
+    };
+
+    const handlePointerUp = async () => {
+      const dragState = dragStateRef.current;
+
+      if (!dragState) {
+        return;
+      }
+
+      const nextPreviewBlock = dragPreviewBlock;
+      dragStateRef.current = null;
+
+      const currentBlock = draftBlocks.find((block) => block.id === dragState.blockId);
+
+      if (!nextPreviewBlock) {
+        if (currentBlock) {
+          handleOpenEditModal(currentBlock);
+        }
+
+        setDragPreviewBlock(null);
+        return;
+      }
+
+      setDragPreviewBlock(null);
+
+      if (!currentBlock) {
+        return;
+      }
+
+      if (
+        currentBlock.dayOfWeek === nextPreviewBlock.dayOfWeek &&
+        currentBlock.startMinutes === nextPreviewBlock.startMinutes
+      ) {
+        return;
+      }
+
+      const nextDraftBlocks = replaceBlock(draftBlocks, nextPreviewBlock).sort(
+        (left, right) => {
+          if (left.dayOfWeek !== right.dayOfWeek) {
+            return left.dayOfWeek - right.dayOfWeek;
+          }
+
+          return left.startMinutes - right.startMinutes;
+        },
+      );
+
+      try {
+        await handleSaveDraft(nextDraftBlocks);
+      } catch {
+        // 기존 draft 저장 실패 정책과 동일하게 화면 메시지는 별도 저장 플로우에서 처리합니다.
+      }
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [dragPreviewBlock, draftBlocks]);
+
+  const handleBlockPointerDown = (
+    event: ReactPointerEvent<HTMLElement>,
+    block: PlannerDraftBlockModel,
+  ) => {
+    event.preventDefault();
+
+    const isMobileInteraction =
+      window.matchMedia('(max-width: 960px)').matches || event.pointerType === 'touch';
+
+    dragStateRef.current = {
+      blockId: block.id,
+      durationMinutes: getBlockDurationMinutes(block),
+      originDayOfWeek: block.dayOfWeek,
+      allowCrossDay: !isMobileInteraction,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      pointerOffsetY: event.clientY - event.currentTarget.getBoundingClientRect().top,
+    };
   };
 
   const handleSavePlanner = async () => {
@@ -512,7 +756,10 @@ export const PlannerScreen = () => {
               <p>원하는 요일과 시간을 눌러 첫 번째 학습 일정을 추가해보세요.</p>
             </div>
           ) : null}
-          <div className="planner-grid">
+          <div
+            ref={gridRef}
+            className={`planner-grid ${isDragging ? 'planner-grid--dragging' : ''}`}
+          >
             <div className="planner-grid__corner" />
             {kDays.map((day, dayIndex) => (
               <button
@@ -547,6 +794,7 @@ export const PlannerScreen = () => {
             {kDays.map((day, dayIndex) => (
               <div
                 key={day}
+                data-day-index={dayIndex}
                 className={`planner-grid__column ${
                   selectedMobileDay !== dayIndex
                     ? 'planner-grid__column--mobile-hidden'
@@ -566,7 +814,7 @@ export const PlannerScreen = () => {
                     aria-label={`${day} ${time}에 학습 블록 추가`}
                   />
                 ))}
-                {draftBlocks
+                {effectiveBlocks
                   .filter((block) => block.dayOfWeek === dayIndex)
                   .map((block) => {
                     const course = findCourse(courses, block.courseId);
@@ -586,11 +834,15 @@ export const PlannerScreen = () => {
                       <article
                         key={block.id}
                         className={`planner-block planner-block--${displayMode} ${
+                          dragPreviewBlock?.id === block.id
+                            ? 'planner-block--dragging'
+                            : ''
+                        } ${
                           conflictingBlockIdSet.has(block.id)
                             ? 'planner-block--conflict'
                             : ''
                         }`}
-                        onClick={() => handleOpenEditModal(block)}
+                        onPointerDown={(event) => handleBlockPointerDown(event, block)}
                         title={blockTitle}
                         style={{
                           ...getBlockStyle(block),
